@@ -1,26 +1,46 @@
-FROM node:10-alpine
-LABEL maintainer "h-mineta <h-mineta@0nyx.net>"
+## Repository loader
+FROM node:10-alpine as repository-loader
 
-ENV DOCKER="YES"
 ARG REPOSITORY="git://github.com/Chinachu/Chinachu.git"
-ARG BRANCH="master"
+ARG BRANCH="gamma"
 
-ARG WORK_DIR="/usr/local/chinachu"
-
-#node container default value
-ARG USER_NAME="node"
+ARG WORK_DIR="/home/node/chinachu"
 
 RUN set -x \
 	&& apk upgrade --update \
-	&& apk add \
+	&& apk add --no-cache \
+		git
+
+USER node
+RUN set -x \
+  && git clone --branch ${BRANCH} --depth 1 --recurse-submodules --shallow-submodules --jobs `nproc` ${REPOSITORY} ${WORK_DIR}
+
+## Base
+FROM node:10-alpine as base
+
+ENV DOCKER="YES"
+ARG WORK_DIR="/home/node/chinachu"
+
+RUN set -x \
+	&& apk upgrade --update \
+	&& apk add --no-cache \
 		bash \
 		coreutils \
 		curl \
 		procps \
-		ca-certificates \
-	\
-	&& apk add --virtual .build-deps \
-		git \
+		ca-certificates
+
+USER node
+#COPY --from=repository-loader --chown=node:node ${WORK_DIR} ${WORK_DIR}
+WORKDIR ${WORK_DIR}
+
+## Builder base
+FROM base as builder-base
+
+USER root
+RUN set -x \
+	&& apk add --no-cache --virtual .build-deps \
+	  git \
 		make \
 		gcc \
 		g++ \
@@ -28,40 +48,42 @@ RUN set -x \
 		automake \
 		wget \
 		curl \
-		sudo \
 		tar \
 		xz \
 		libc-dev \
 		musl-dev \
 		eudev-dev \
 		libevent-dev \
-		perl-utils \
-	\
-	&& mkdir -p ${WORK_DIR} \
-	&& git clone ${REPOSITORY} ${WORK_DIR} \
-	&& chown -R ${USER_NAME} ${WORK_DIR} \
-	&& cd ${WORK_DIR} \
-	&& git checkout ${BRANCH} \
-	&& echo 2 | sudo -u ${USER_NAME} ./chinachu installer \
-	&& echo 4 | sudo -u ${USER_NAME} ./chinachu installer \
-	&& echo 5 | sudo -u ${USER_NAME} ./chinachu installer \
-	&& sudo -u ${USER_NAME} ./chinachu service operator initscript | tee /tmp/chinachu-operator \
-	&& sudo -u ${USER_NAME} ./chinachu service wui initscript | tee /tmp/chinachu-wui \
-	&& sudo -u ${USER_NAME} mkdir log \
-	\
-	&& chmod u+x /tmp/chinachu-operator /tmp/chinachu-wui \
-	&& mv /tmp/chinachu-operator /etc/init.d/ \
-	&& mv /tmp/chinachu-wui /etc/init.d/ \
-	\
-	# cleaning
-	&& cd / \
-	&& npm cache verify \
-	&& apk del --purge .build-deps \
-	&& rm -rf /var/cache/apk/*
+		perl-utils
 
-COPY services.sh /usr/local/bin
-COPY config.sample.json ${WORK_DIR}
+USER node
 
-WORKDIR ${WORK_DIR}
-CMD ["/usr/local/bin/services.sh"]
+## ffmpeg builder
+FROM builder-base as ffmpeg-builder
+
+COPY --from=repository-loader --chown=node:node ${WORK_DIR}/chinachu .
+RUN set -x \
+  && echo 5 | ./chinachu installer
+
+## Dependencies  resolver
+FROM builder-base as deps-resolver
+
+COPY --from=repository-loader --chown=node:node ${WORK_DIR}/package*.json .
+RUN set -x \
+	&& npm install --production --prefer-offline --no-audit
+RUN ls node_modules
+
+## Deploy
+FROM base as deploy
+
+COPY --from=repository-loader --chown=node:node ${WORK_DIR} .
+RUN ls .
+COPY  --from=ffmpeg-builder ${WORK_DIR}/usr/bin ./usr/bin
+RUN ls -r usr
+COPY  --from=deps-resolver /home/node/chinachu/node_modules ./node_modules
+COPY config.sample.json ./
+
+CMD ["app-operator.js"]
+
 EXPOSE 10772 20772 5353
+
