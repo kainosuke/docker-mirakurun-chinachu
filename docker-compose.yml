@@ -12,6 +12,12 @@ services:
      - ./recorded:/home/node/chinachu/recorded
      - ./log:/home/node/chinachu/log
     command: app-operator.js
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-file: "1"
+        max-size: 10m
   chinachu-wui:
     image: chinachu:latest
     build:
@@ -26,3 +32,9 @@ services:
      - ./recorded:/home/node/chinachu/recorded
      - ./log:/home/node/chinachu/log
     command: app-wui.js
+    restart: always
+    logging:
+      driver: json-file
+      options:
+        max-file: "1"
+        max-size: 10m
